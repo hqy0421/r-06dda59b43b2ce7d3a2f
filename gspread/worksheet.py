@@ -29,8 +29,9 @@ from typing import (
     Union,
 )
 
+from . import filter_view as filter_view_module
 from .cell import Cell
-from .exceptions import GSpreadException
+from .exceptions import FilterViewError, GSpreadException
 from .http_client import DefaultSerializerType, HTTPClient, ParamsType
 from .urls import WORKSHEET_DRIVE_URL
 from .utils import (
@@ -2635,6 +2636,227 @@ class Worksheet:
         }
 
         return self.client.batch_update(self.spreadsheet_id, body)
+
+    def get_filter_views(self) -> List[Mapping[str, Any]]:
+        """Return the filter views saved on this worksheet.
+
+        The returned objects are the raw ``FilterView`` resources of the
+        Sheets API. Use the ``filterViewId`` field with
+        :meth:`~gspread.worksheet.Worksheet.export_filter_view`.
+
+        .. versionadded:: 6.3
+
+        Example::
+
+            for view in worksheet.get_filter_views():
+                print(view["filterViewId"], view["title"])
+        """
+        metadata = self._get_filter_view_metadata()
+
+        return list(metadata["sheet"].get("filterViews") or [])
+
+    def get_filter_view(self, filter_view_id: int) -> Mapping[str, Any]:
+        """Return the filter view with the given ID.
+
+        :param int filter_view_id: the ID of the filter view.
+
+        :raises gspread.exceptions.FilterViewNotFound: if this worksheet has no
+            filter view with that ID.
+        :raises gspread.exceptions.FilterViewError: if the ID is not an integer.
+
+        .. versionadded:: 6.3
+        """
+        metadata = self._get_filter_view_metadata()
+
+        return filter_view_module.find_filter_view(
+            metadata["sheet"].get("filterViews") or [], filter_view_id
+        )
+
+    def _get_filter_view_metadata(self) -> Dict[str, Any]:
+        """Fetch and locate the filter view related metadata of this sheet."""
+        metadata = self.client.fetch_sheet_metadata(
+            self.spreadsheet_id,
+            params={"fields": filter_view_module.FILTER_VIEW_METADATA_FIELDS},
+        )
+
+        try:
+            sheet = finditem(
+                lambda x: x["properties"]["sheetId"] == self.id, metadata["sheets"]
+            )
+        except (KeyError, StopIteration):
+            raise FilterViewError(
+                "the metadata of the worksheet {!r} was not returned by the "
+                "API".format(self.title)
+            )
+
+        return {"metadata": metadata, "sheet": sheet}
+
+    def export_filter_view(
+        self,
+        filter_view_id: int,
+        skip_blank_rows: bool = True,
+        mark_hidden_rows: bool = True,
+    ) -> "filter_view_module.FilterViewExport":
+        """Export the rows selected by a saved filter view.
+
+        The filter view is looked up by its ID, its actual bounded range is
+        resolved (either the view ``range``, the ``namedRangeId`` it is backed
+        by, or the ``tableId`` it is backed by) and the first row of that range
+        is used as the header.
+
+        The rules of the view are evaluated exactly as the Sheets API does:
+
+        * ``filterSpecs`` takes precedence over the deprecated ``criteria`` map;
+        * text conditions are matched against the displayed (formatted) value,
+          case sensitively;
+        * numeric conditions are matched against the computed (unformatted)
+          value only;
+        * a value listed in ``hiddenValues`` is always hidden, even when the
+          column condition matches it;
+        * every column rule must match for a row to be exported.
+
+        The current basic filter of the worksheet is **not** used: only the
+        selected filter view is evaluated. Rows exported keep their original
+        sheet row numbers and their original order; the sort order of the view
+        (``sortSpecs``) only changes the display order in the Sheets UI and is
+        ignored here.
+
+        Rows hidden manually by the user are still exported when they match the
+        view, but they are flagged with ``hidden_by_user``. They are never
+        conflated with the rows excluded by the filter view, which are
+        reported in :attr:`FilterViewExport.excluded_rows` together with the
+        rule that rejected them.
+
+        This method never modifies the worksheet.
+
+        :param int filter_view_id: the ID of the filter view to export.
+        :param bool skip_blank_rows: (optional) when True (default), the
+            trailing rows whose displayed values are all empty are ignored.
+            They are padding rows of the sheet grid, not actual data. Blank
+            rows in the middle of the data are kept, since a ``BLANK``
+            condition may select them on purpose.
+        :param bool mark_hidden_rows: (optional) when True (default), an extra
+            request is made to know which rows are hidden manually so that they
+            can be flagged. Set it to False to perform a single read of the
+            values.
+
+        :returns: a :class:`gspread.filter_view.FilterViewExport` holding the
+            headers, the exported rows, and the excluded rows with the reason
+            of their exclusion.
+        :rtype: :class:`gspread.filter_view.FilterViewExport`
+
+        :raises gspread.exceptions.FilterViewNotFound: if this worksheet has no
+            filter view with that ID.
+        :raises gspread.exceptions.UnsupportedFilterViewRule: if the view uses a
+            rule that cannot be evaluated client side, such as a color filter,
+            a custom formula, a date rule or a data source column. The whole
+            export fails instead of returning a partial result.
+        :raises gspread.exceptions.FilterViewError: if the view range or one of
+            its rules cannot be resolved.
+
+        .. versionadded:: 6.3
+
+        Example::
+
+            export = worksheet.export_filter_view(1234567890)
+            export.headers
+            # ['SKU', 'Inbound date', 'Quantity']
+            for row in export.rows:
+                print(row.row_number, row.values, row.hidden_by_user)
+            for row in export.excluded_rows:
+                print(row.row_number, row.rules, [str(r) for r in row.reasons])
+        """
+        view_metadata = self._get_filter_view_metadata()
+        metadata = view_metadata["metadata"]
+        sheet = view_metadata["sheet"]
+
+        filter_views = sheet.get("filterViews") or []
+        filter_view = filter_view_module.find_filter_view(filter_views, filter_view_id)
+
+        grid_properties = sheet.get("properties", {}).get("gridProperties", {})
+        grid_range = filter_view_module.resolve_grid_range(
+            filter_view,
+            sheet_metadata=sheet,
+            named_ranges=metadata.get("namedRanges") or [],
+            sheet_id=self.id,
+            row_count=grid_properties.get("rowCount"),
+            column_count=grid_properties.get("columnCount"),
+        )
+
+        range_name = filter_view_module.grid_range_to_a1(grid_range)
+
+        display_values = self.get(
+            range_name, value_render_option=ValueRenderOption.formatted
+        )
+        numeric_values = self.get(
+            range_name, value_render_option=ValueRenderOption.unformatted
+        )
+        assert isinstance(display_values, ValueRange)
+        assert isinstance(numeric_values, ValueRange)
+
+        hidden_row_indexes: List[int] = []
+        if mark_hidden_rows is True:
+            hidden_row_indexes = self._get_manually_hidden_row_indexes(
+                grid_range, sheet
+            )
+
+        return filter_view_module.build_export(
+            filter_view=filter_view,
+            grid_range=grid_range,
+            display_values=display_values,
+            numeric_values=numeric_values,
+            hidden_row_indexes=hidden_row_indexes,
+            skip_blank_rows=skip_blank_rows,
+            sheet_title=self.title,
+            display_value_range=display_values.range,
+            numeric_value_range=numeric_values.range,
+        )
+
+    def _get_manually_hidden_row_indexes(
+        self, grid_range: Mapping[str, int], sheet: Mapping[str, Any]
+    ) -> List[int]:
+        """Return the zero-based indexes of the rows hidden manually.
+
+        The row metadata of the grid gives ``hiddenByUser`` per row. Rows
+        inside a collapsed row group are also hidden, and the API does not
+        always flag them with ``hiddenByUser``, so the collapsed groups are
+        merged in. When the grid metadata cannot be fetched, the collapsed row
+        groups are used alone, as a best effort fallback.
+        """
+        hidden = set(filter_view_module.collapsed_row_indexes(sheet, grid_range))
+
+        range_name = filter_view_module.grid_range_to_a1(grid_range)
+
+        try:
+            response = self.client.fetch_sheet_metadata(
+                self.spreadsheet_id,
+                params={
+                    "includeGridData": "true",
+                    "ranges": [absolute_range_name(self.title, range_name)],
+                    "fields": filter_view_module.HIDDEN_ROWS_METADATA_FIELDS,
+                },
+            )
+        except GSpreadException:
+            return sorted(hidden)
+
+        if response is None:
+            return sorted(hidden)
+
+        try:
+            sheet_data = finditem(
+                lambda x: x["properties"]["sheetId"] == self.id,
+                response["sheets"],
+            )
+        except (KeyError, StopIteration):
+            return sorted(hidden)
+
+        for grid_data in sheet_data.get("data") or []:
+            start_row = int(grid_data.get("startRow", 0))
+            for offset, row_metadata in enumerate(grid_data.get("rowMetadata") or []):
+                if row_metadata.get("hiddenByUser") is True:
+                    hidden.add(start_row + offset)
+
+        return sorted(hidden)
 
     @classmethod
     def _duplicate(

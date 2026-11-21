@@ -15,11 +15,21 @@ from .auth import (
 from .cell import Cell
 from .client import Client
 from .exceptions import (
+    FilterViewError,
+    FilterViewNotFound,
     GSpreadException,
     IncorrectCellLabel,
     NoValidUrlKeyFound,
     SpreadsheetNotFound,
+    UnsupportedFilterViewRule,
     WorksheetNotFound,
+)
+from .filter_view import (
+    ColumnFilterRule,
+    FilterViewExcludedRow,
+    FilterViewExclusion,
+    FilterViewExport,
+    FilterViewRow,
 )
 from .http_client import BackOffHTTPClient, HTTPClient
 from .spreadsheet import Spreadsheet
@@ -43,6 +53,13 @@ __all__ = [
     # from .client
     "Client",
 
+    # from .filter_view
+    "ColumnFilterRule",
+    "FilterViewExcludedRow",
+    "FilterViewExclusion",
+    "FilterViewExport",
+    "FilterViewRow",
+
     # from .http_client
     "BackOffHTTPClient",
     "HTTPClient",
@@ -55,10 +72,13 @@ __all__ = [
     "ValueRange",
 
     # from .exceptions
+    "FilterViewError",
+    "FilterViewNotFound",
     "GSpreadException",
     "IncorrectCellLabel",
     "NoValidUrlKeyFound",
     "SpreadsheetNotFound",
+    "UnsupportedFilterViewRule",
     "WorksheetNotFound",
 
     # full module imports

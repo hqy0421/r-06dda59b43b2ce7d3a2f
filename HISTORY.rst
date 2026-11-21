@@ -1,3 +1,11 @@
+Unreleased
+----------
+
+* Add ``Worksheet.export_filter_view`` to export the rows of a saved filter
+  view, with the reason why each other row was excluded, and
+  ``Worksheet.get_filter_views`` / ``Worksheet.get_filter_view`` to list them.
+  See :mod:`gspread.filter_view`.
+
 Release History
 ===============
 

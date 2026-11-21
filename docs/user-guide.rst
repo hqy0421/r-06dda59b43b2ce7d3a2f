@@ -571,6 +571,72 @@ Delete a named range:
     The ``named_range_id`` can be obtained from :meth:`~gspread.Spreadsheet.list_named_ranges`.
 
 
+Filter Views
+~~~~~~~~~~~~
+
+A filter view is a saved set of rules attached to a range of a worksheet. It is
+created and maintained by the users of the spreadsheet, in the Google Sheets
+UI. gspread reads them, evaluates their rules and exports the matching rows
+without modifying the worksheet.
+
+List the filter views of a worksheet, then export one of them by ID:
+
+.. code:: python
+
+   for view in worksheet.get_filter_views():
+       print(view["filterViewId"], view["title"])
+
+   export = worksheet.export_filter_view(1234567890)
+
+   export.range      # "A1:C42", the actual bounded range of the view
+   export.headers    # ["SKU", "Inbound date", "Quantity"]
+
+   for row in export.rows:
+       print(row.row_number, row.values, row.hidden_by_user)
+
+   for row in export.excluded_rows:
+       print(row.row_number, row.rules, [str(reason) for reason in row.reasons])
+
+The first row of the view range is used as the header. Rows that match keep
+their original sheet row number and their original order.
+
+``export.excluded_rows`` explains why each other row was left out: ``row.rules``
+holds the names of the failing rules (one entry per failing column) and
+``row.reasons`` holds :class:`~gspread.filter_view.FilterViewExclusion` objects
+with the column, the expected value and the actual value, so the message can be
+shown as is.
+
+The rules are evaluated the same way Google Sheets does:
+
+* ``filterSpecs`` takes precedence over the deprecated ``criteria`` map;
+* every column condition must hold (logical AND);
+* text conditions use the displayed value and are case sensitive;
+* numeric conditions use only the computed number, never the displayed text;
+* a value listed in ``hiddenValues`` is always hidden, even if the column
+  condition matches it;
+* the current basic filter of the worksheet is ignored: only the selected view
+  is evaluated.
+
+Rows hidden manually by a user (or contained in a collapsed row group) are not
+confused with the rows excluded by the view. They are still exported when the
+view matches them, but their ``hidden_by_user`` flag is ``True``. Use
+``export.manually_hidden_rows`` and ``export.visible_rows`` to tell them apart.
+Pass ``mark_hidden_rows=False`` to skip the extra request needed to discover
+them.
+
+.. code:: python
+
+   export.to_records()
+   # [{"SKU": "A-1", "Inbound date": "2025-01-02", "Quantity": "12"}, ...]
+
+Some rules cannot be reproduced outside of Google Sheets: colors, custom
+formulas, dates or data source columns. When the selected view contains one of
+them, the whole export raises
+:class:`~gspread.exceptions.UnsupportedFilterViewRule` instead of returning a
+partial result. A missing view raises
+:class:`~gspread.exceptions.FilterViewNotFound`.
+
+
 Using gspread with pandas
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 

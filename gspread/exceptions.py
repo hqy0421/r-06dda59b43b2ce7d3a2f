@@ -19,6 +19,23 @@ class GSpreadException(Exception):
     """A base class for gspread's exceptions."""
 
 
+class FilterViewError(GSpreadException):
+    """The filter view cannot be resolved or evaluated."""
+
+
+class FilterViewNotFound(FilterViewError):
+    """The requested filter view does not exist in the worksheet."""
+
+
+class UnsupportedFilterViewRule(FilterViewError):
+    """The filter view contains a rule that cannot be evaluated client side.
+
+    Rules depending on colors, custom formulas, dates, etc. cannot be
+    reproduced outside of Google Sheets, so the whole export is refused
+    instead of returning a partial result.
+    """
+
+
 class WorksheetNotFound(GSpreadException):
     """Trying to open non-existent or inaccessible worksheet."""
 
